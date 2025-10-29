@@ -1,0 +1,6 @@
+
+avr-objcopy -O ihex -R .eeprom target/avr-atmega328p/release/blink.elf blink.hex
+cargo build --release
+avrdude -c arduino -p m328p -P COM3 -b 115200 -U flash:w:blink.hex
+
+avrdude -c arduino -p m328p  -b 115200

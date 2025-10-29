@@ -1,0 +1,419 @@
+#![no_std]
+#![no_main]
+#![feature(abi_avr_interrupt)]
+use arduino_hal::hal::port::PB3;
+use arduino_hal::hal::port::PD5;
+use arduino_hal::hal::port::PD6;
+use arduino_hal::pac::ac::acsr::W;
+use arduino_hal::port;
+use arduino_hal::port::Pin;
+use arduino_hal::port::mode::Floating;
+use arduino_hal::port::mode::Input;
+use arduino_hal::port::mode::PwmOutput;
+use arduino_hal::prelude::*;
+use arduino_hal::simple_pwm::IntoPwmPin;
+use arduino_hal::simple_pwm::Prescaler;
+use arduino_hal::simple_pwm::{Timer0Pwm, Timer2Pwm};
+use avr_device::interrupt::CriticalSection;
+use avr_device::interrupt::Mutex;
+use core::cell::{Cell, RefCell};
+use core::panic::PanicInfo;
+
+const CHANNELS: usize = 6;
+const HIGH_VALUE: u16 = 1800;
+const LOW_VALUE: u16 = 1400;
+
+// Valores de los canales (en microsegundos)
+static CHANNEL_VALUES: Mutex<RefCell<[u16; CHANNELS]>> = Mutex::new(RefCell::new([0; CHANNELS]));
+static LAST_TIME: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+static CHANNEL_INDEX: Mutex<Cell<u8>> = Mutex::new(Cell::new(0));
+static PULSE_COUNT: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+static LAST_PULSE: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+
+pub struct Ppm {
+    tc1: arduino_hal::pac::TC1,
+    exint: arduino_hal::pac::EXINT,
+}
+impl Ppm {
+    fn new(
+        tc1: arduino_hal::pac::TC1,
+        exint: arduino_hal::pac::EXINT,
+        d2: port::Pin<Input<Floating>, port::D2>,
+    ) -> Self {
+        let _ppm_pin = d2.into_floating_input();
+        Ppm { tc1, exint }
+    }
+    fn init(self) -> Self {
+        self.tc1.tccr1b.write(|w| w.cs1().prescale_64());
+        unsafe {
+            avr_device::interrupt::enable();
+            self.exint.eicra.write(|w| w.isc0().bits(0b11));
+            self.exint.eimsk.write(|w| w.int0().set_bit());
+        }
+        self
+    }
+    fn get_channels(&self) -> impl Iterator<Item = (Option<Stick>, u16)> {
+        avr_device::interrupt::free(|cs| {
+            let ch = CHANNEL_VALUES.borrow(cs).borrow();
+            ch.into_iter()
+                .enumerate()
+                .filter_map(|(i, v)| Some((Stick::from_usize(i as u16), v)))
+        })
+        //channels
+    }
+}
+
+#[avr_device::interrupt(atmega328p)]
+fn INT0() {
+    // Leer contador actual de Timer1
+    let now = unsafe { (*avr_device::atmega328p::TC1::ptr()).tcnt1.read().bits() };
+
+    avr_device::interrupt::free(|cs| {
+        let last = LAST_TIME.borrow(cs).get();
+        LAST_TIME.borrow(cs).set(now);
+
+        let diff = now.wrapping_sub(last);
+        let micros = diff * 4; // ticks -> us
+
+        if micros > 4000 {
+            // Nuevo frame
+            CHANNEL_INDEX.borrow(cs).set(0);
+        } else {
+            let idx = CHANNEL_INDEX.borrow(cs).get() as usize;
+            if idx < CHANNELS {
+                CHANNEL_VALUES.borrow(cs).borrow_mut()[idx] = micros;
+                CHANNEL_INDEX.borrow(cs).set(idx as u8 + 1);
+            }
+        }
+    });
+}
+
+//#[avr_device::interrupt(atmega328p)]
+//fn INT1() {
+//    avr_device::interrupt::free(|cs| {
+//        let now = unsafe { (*avr_device::atmega328p::TC1::ptr()).tcnt1.read().bits() };
+//        let last = LAST_PULSE.borrow(cs).get();
+//
+//        let diff = now.wrapping_sub(last);
+//        let micros = diff * 4; // ticks -> us
+//
+//        if micros > 6000 {
+//            let counter = PULSE_COUNT.borrow(cs);
+//            counter.set(counter.get().wrapping_add(1));
+//            LAST_PULSE.borrow(cs).set(now);
+//        }
+//    });
+//}
+static LAST_PULSE_TICKS: Mutex<Cell<u16>> = Mutex::new(Cell::new(0));
+static LAST_PERIOD_US: Mutex<Cell<u32>> = Mutex::new(Cell::new(0));
+
+const PPR: u32 = 2; // Pulsos por vuelta del fan típico de CPU
+const MIN_PULSE_US: u32 = 4500; // filtro anti-rebote (~4 ms)
+
+// ISR INT1
+//#[avr_device::interrupt(atmega328p)]
+//fn INT1() {
+//    avr_device::interrupt::free(|cs| {
+//        // Leer Timer1
+//        let now = unsafe { (*avr_device::atmega328p::TC1::ptr()).tcnt1.read().bits() };
+//        let last = LAST_PULSE_TICKS.borrow(cs).get();
+//
+//        // Diferencia de ticks (wrapping_sub para evitar overflow)
+//        let diff = now.wrapping_sub(last);
+//        let micros = diff as u32 * 4; // ticks -> µs (prescaler 64, clock 16 MHz)
+//
+//        // Solo contar si pasó suficiente tiempo desde el último pulso
+//        if micros >= MIN_PULSE_US {
+//            LAST_PULSE_TICKS.borrow(cs).set(now);
+//            LAST_PERIOD_US.borrow(cs).set(micros);
+//        } else {
+//            // Si no, ignorar el pulso
+//            LAST_PERIOD_US.borrow(cs).set(0);
+//        }
+//    });
+//}
+
+pub enum Stick {
+    Right(Channel),
+    Left(Channel),
+}
+pub enum Channel {
+    UpDown,
+    RightLeft,
+    VrA,
+    VrB,
+}
+
+pub enum Position {
+    Up(u8),
+    Mid(u8),
+    Down(u8),
+    Unknow(u8),
+}
+
+impl Stick {
+    // Convertir un usize en un enum
+    fn from_usize(n: u16) -> Option<Self> {
+        match n {
+            0 => Some(Stick::Right(Channel::RightLeft)),
+            1 => Some(Stick::Right(Channel::UpDown)),
+            2 => Some(Stick::Left(Channel::UpDown)),
+            3 => Some(Stick::Left(Channel::RightLeft)),
+            4 => Some(Stick::Left(Channel::VrA)),
+            5 => Some(Stick::Right(Channel::VrB)),
+            _ => None,
+        }
+    }
+    fn to_position(value: u16) -> Position {
+        if value >= 1666 && value <= 2000 {
+            let potency = (((value - 1666) as f32 * 255.0) / 334.0) as u8;
+            return Position::Up(potency);
+        } else if value >= 1333 && value < 1666 {
+            let potency = (((value - 1333) as f32 * 255.0) / 333.0) as u8;
+            return Position::Mid(potency);
+        } else if value >= 1000 && value < 1333 {
+            let potency = (((1332 - value) as f32 * 255.0) / 332.0) as u8;
+            return Position::Down(potency);
+        } else {
+            return Position::Unknow(0);
+        }
+    }
+}
+
+trait Test {
+    fn turn_on_with_potency(&mut self, potency: u8);
+    fn turn_off(&mut self);
+}
+impl Test for Pin<PwmOutput<Timer2Pwm>, PB3> {
+    fn turn_on_with_potency(&mut self, potency: u8) {
+        self.enable();
+        self.set_duty(potency);
+    }
+    fn turn_off(&mut self) {
+        self.disable();
+        self.set_duty(0);
+    }
+}
+impl Test for Pin<PwmOutput<Timer0Pwm>, PD5> {
+    fn turn_on_with_potency(&mut self, potency: u8) {
+        self.enable();
+        self.set_duty(potency);
+    }
+    fn turn_off(&mut self) {
+        self.disable();
+        self.set_duty(0);
+    }
+}
+impl Test for Pin<PwmOutput<Timer0Pwm>, PD6> {
+    fn turn_on_with_potency(&mut self, potency: u8) {
+        self.enable();
+        self.set_duty(potency);
+    }
+    fn turn_off(&mut self) {
+        self.disable();
+        self.set_duty(0);
+    }
+}
+#[arduino_hal::entry]
+fn main() -> ! {
+    let dp = arduino_hal::Peripherals::take().unwrap();
+    let pins = arduino_hal::pins!(dp);
+    let ppm = Ppm::new(dp.TC1, dp.EXINT, pins.d2).init();
+
+    let mut serial = arduino_hal::default_serial!(dp, pins, 115200);
+
+    let timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
+    let timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
+
+    let mut pwm_led_green = pins.d11.into_output().into_pwm(&timer2);
+    let mut pwm_led_red = pins.d5.into_output().into_pwm(&timer0);
+    let mut pwm_led_yellow = pins.d6.into_output().into_pwm(&timer0);
+
+    // Configurar interrupción INT1 en flanco de bajada (10b)
+    let mut switch_position: Position = Position::Down(0);
+    loop {
+        //avr_device::interrupt::free(|cs| {
+        for (ch, val) in ppm.get_channels() {
+            ufmt::uwrite!(&mut serial, "{},", val).unwrap_infallible();
+            if let Some(ch) = ch {
+                match switch_position {
+                    Position::Up(_) => match ch {
+                        Stick::Right(Channel::UpDown) => match Stick::to_position(val) {
+                            Position::Up(potency) => {
+                                process_led_red(
+                                    &mut pwm_led_red,
+                                    &mut pwm_led_yellow,
+                                    &mut pwm_led_green,
+                                    potency,
+                                );
+
+                                // ufmt::uwrite!(&mut serial, "Red: {}-{}", potency, val)
+                                //    .unwrap_infallible();
+                            }
+                            Position::Mid(potency) => {
+                                pwm_led_yellow.turn_on_with_potency(potency);
+                                pwm_led_red.turn_off();
+                                pwm_led_green.turn_off();
+                                // ufmt::uwrite!(&mut serial, "Yellow: {}-{}", potency, val)
+                                //     .unwrap_infallible();
+                            }
+                            Position::Down(potency) => {
+                                pwm_led_green.turn_on_with_potency(potency);
+                                pwm_led_yellow.turn_off();
+                                pwm_led_red.turn_off();
+                                // ufmt::uwrite!(&mut serial, "Green: {}-{}", potency, val)
+                                //     .unwrap_infallible();
+                            }
+                            _ => {
+                                //ufmt::uwrite!(&mut serial, "Unknow position").unwrap_infallible();
+                            }
+                        },
+                        Stick::Right(Channel::VrB) => match Stick::to_position(val) {
+                            Position::Up(potency) => switch_position = Position::Up(potency),
+                            Position::Down(potency) => switch_position = Position::Down(potency),
+                            Position::Mid(potency) => switch_position = Position::Mid(potency),
+                            _ => {
+                                // ufmt::uwrite!(&mut serial, "Unknow position").unwrap_infallible();
+                            }
+                        },
+                        _ => {
+                            // ufmt::uwrite!(&mut serial, "Channel: {}", val).unwrap_infallible();
+                        }
+                    },
+                    _ => match ch {
+                        Stick::Right(Channel::RightLeft) => match Stick::to_position(val) {
+                            Position::Up(potency) => {
+                                process_led_red(
+                                    &mut pwm_led_red,
+                                    &mut pwm_led_yellow,
+                                    &mut pwm_led_green,
+                                    potency,
+                                );
+
+                                //   ufmt::uwrite!(&mut serial, "Red: {}-{}", potency, val)
+                                //       .unwrap_infallible();
+                            }
+                            Position::Mid(potency) => {
+                                pwm_led_yellow.turn_on_with_potency(potency);
+                                pwm_led_red.turn_off();
+                                pwm_led_green.turn_off();
+                                //  ufmt::uwrite!(&mut serial, "Yellow: {}-{}", potency, val)
+                                //      .unwrap_infallible();
+                            }
+                            Position::Down(potency) => {
+                                pwm_led_green.turn_on_with_potency(potency);
+                                pwm_led_yellow.turn_off();
+                                pwm_led_red.turn_off();
+                                // ufmt::uwrite!(&mut serial, "Green: {}-{}", potency, val)
+                                //     .unwrap_infallible();
+                            }
+                            _ => {
+                                // ufmt::uwrite!(&mut serial, "Unknow position").unwrap_infallible();
+                            }
+                        },
+                        Stick::Right(Channel::VrB) => match Stick::to_position(val) {
+                            Position::Up(potency) => switch_position = Position::Up(potency),
+                            Position::Down(potency) => switch_position = Position::Down(potency),
+                            Position::Mid(potency) => switch_position = Position::Mid(potency),
+                            _ => {
+                                //ufmt::uwrite!(&mut serial, "Unknow position").unwrap_infallible();
+                            }
+                        },
+                        _ => {
+                            //ufmt::uwrite!(&mut serial, "Channel: {}", val).unwrap_infallible();
+                        }
+                    },
+                }
+            }
+        }
+        ufmt::uwrite!(&mut serial, "\r\n").unwrap_infallible();
+        //});
+
+        arduino_hal::delay_ms(100);
+    }
+}
+
+fn process_led_red<A: Test, B: Test, C: Test>(
+    led_red: &mut A,
+    led_yellow: &mut B,
+    led_green: &mut C,
+    potency: u8,
+) {
+    led_red.turn_on_with_potency(potency);
+    led_yellow.turn_off();
+    led_green.turn_off();
+}
+
+fn check_right_stick2(
+    channel: usize,
+    value: &u16,
+    led: &mut arduino_hal::port::Pin<arduino_hal::port::mode::Output, arduino_hal::port::D13>,
+) {
+    const UP_DOWN_CHANNEL: usize = 1;
+    const RIGHT_LEFT_CHANNEL: usize = 0;
+
+    let value = *value;
+
+    if channel == UP_DOWN_CHANNEL && (value >= HIGH_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value >= HIGH_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value <= LOW_VALUE) {
+        led.set_high();
+    } else if channel == UP_DOWN_CHANNEL && (value <= LOW_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value < HIGH_VALUE && value > LOW_VALUE) {
+        led.set_low();
+    }
+}
+
+fn check_right_stick(
+    channel: usize,
+    value: &u16,
+    led: &mut arduino_hal::port::Pin<arduino_hal::port::mode::Output, arduino_hal::port::D13>,
+) {
+    const UP_DOWN_CHANNEL: usize = 1;
+    const RIGHT_LEFT_CHANNEL: usize = 0;
+
+    let value = *value;
+
+    if channel == UP_DOWN_CHANNEL && (value >= HIGH_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value >= HIGH_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value <= LOW_VALUE) {
+        led.set_high();
+    } else if channel == UP_DOWN_CHANNEL && (value <= LOW_VALUE) {
+        led.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL && (value < HIGH_VALUE && value > LOW_VALUE) {
+        led.set_low();
+    }
+}
+
+fn check_left_stick(
+    channel: usize,
+    value: &u16,
+    led_blue: &mut arduino_hal::port::Pin<arduino_hal::port::mode::Output, arduino_hal::port::D12>,
+) {
+    const UP_DOWN_CHANNEL_A: usize = 2;
+    const RIGHT_LEFT_CHANNEL_B: usize = 3;
+
+    let value = *value;
+
+    if channel == UP_DOWN_CHANNEL_A && (value >= HIGH_VALUE) {
+        led_blue.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL_B && (value >= HIGH_VALUE) {
+        led_blue.set_high();
+    } else if channel == RIGHT_LEFT_CHANNEL_B && (value <= LOW_VALUE) {
+        led_blue.set_high();
+    } else if channel == UP_DOWN_CHANNEL_A && (value <= LOW_VALUE) {
+        led_blue.set_high();
+    } else if channel == UP_DOWN_CHANNEL_A && (value < HIGH_VALUE && value > LOW_VALUE) {
+        led_blue.set_low();
+    }
+}
+
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
+    loop {}
+}

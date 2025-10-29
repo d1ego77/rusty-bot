@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Ox-Bot (Release)",
+      "type": "pwa-node",
+      "request": "launch",
+      "preLaunchTask": "Run Ox-Bot Release",
+      "program": "${workspaceFolder}/target/avr-atmega328p/release/ox-bot.elf",
+      "console": "integratedTerminal"
+    }
+  ]
+}

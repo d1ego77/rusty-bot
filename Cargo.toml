@@ -1,0 +1,30 @@
+[package]
+name = "ox-bot"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ox-bot"
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+avr-device = { version = "0.7.0", features = ["atmega328p"] }
+embedded-io = "0.6.1"
+nb = "1.1.0"
+panic-halt = "1.0.0"
+parse_rc_ibus = "0.2.0"
+ufmt = "0.2.0"
+ufmt_float = "0.2.0"
+
+[dependencies.arduino-hal]
+git = "https://github.com/rahix/avr-hal"
+rev = "fafaf587a32a4500239fd073f89d1b9c36b48092"
+features = ["arduino-uno"]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+codegen-units = 1

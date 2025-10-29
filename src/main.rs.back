@@ -1,0 +1,149 @@
+/*!
+ * Blink the builtin LED - the "Hello World" of embedded programming.
+ */
+#![no_std]
+#![no_main]
+#![feature(abi_avr_interrupt)]
+
+use arduino_hal::pac::TC1;
+use arduino_hal::pac::EXINT;
+use avr_device::interrupt;
+use core::cell::Cell;
+use core::panic::PanicInfo;
+use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
+use avr_device::atmega328p::exint::EIMSK;
+use avr_device::atmega328p::exint::eimsk; 
+use avr_device::atmega328p::exint::eicra;
+use arduino_hal::hal::pac::exint::EICRA;
+use arduino_hal::hal::pac::exint::eicra::W;
+use arduino_hal::hal::pac::exint::eimsk::W as OtherW;
+use arduino_hal::hal::pac::exint::eicra::EICRA_SPEC;
+use core::ops::DerefMut;
+pub struct RcChannels {
+    tc1: TC1,
+}
+
+static CH1_START: interrupt::Mutex<Cell<u16>> = interrupt::Mutex::new(Cell::new(0));
+static CH1_WIDTH: interrupt::Mutex<Cell<u16>> = interrupt::Mutex::new(Cell::new(0));
+
+static CH2_START: interrupt::Mutex<Cell<u16>> = interrupt::Mutex::new(Cell::new(0));
+static CH2_WIDTH: interrupt::Mutex<Cell<u16>> = interrupt::Mutex::new(Cell::new(0));
+
+impl RcChannels {
+    pub fn new(dp: EXINT, tc1: TC1) -> Self {
+        // Timer1 prescaler 8 → 0.5us/tick
+        tc1.tccr1a.write(|w| w);
+        tc1.tccr1b.write(|w| w.cs1().prescale_8());
+
+        // Configurar ICP1 para flanco de subida (CH1)
+        tc1.tccr1b.modify(|_, w| w.ices1().set_bit());
+        // Habilitar interrupción de Input Capture
+        tc1.timsk1.write(|w| w.icie1().set_bit());
+
+        // Configurar interrupciones externas para CH2 (INT0)
+        dp.eicra.write(|w: &mut eicra::W| w.isc0().bits(1).isc1().bits(0)); // cualquier flanco
+        dp.eimsk.write(|w: &mut eimsk::W| w.int0().bit(true)); 
+
+       unsafe  { interrupt::enable(); }
+        RcChannels { tc1 }
+    }
+
+    /// Leer ancho de pulso CH1 en microsegundos
+    pub fn ch1(&self) -> u32 {
+        interrupt::free(|cs| {
+            let w = CH1_WIDTH.borrow(cs).get();
+            (w as u32) / 2
+        })
+    }
+
+    /// Leer ancho de pulso CH2 en microsegundos
+    pub fn ch2(&self) -> u32 {
+        interrupt::free(|cs| {
+            let w = CH2_WIDTH.borrow(cs).get();
+            (w as u32) / 2
+        })
+    }
+}
+
+// ISR Input Capture → CH1
+#[avr_device::interrupt(atmega328p)]
+fn TIMER1_CAPT() {
+    interrupt::free(|cs| {
+        let tc1 = unsafe { &*arduino_hal::pac::TC1::ptr() };
+        let captured = tc1.icr1.read().bits();
+        let rising = tc1.tccr1b.read().ices1().bit_is_set();
+
+        if rising {
+            CH1_START.borrow(cs).set(captured);
+            tc1.tccr1b.modify(|_, w| w.ices1().clear_bit());
+        } else {
+            let start = CH1_START.borrow(cs).get();
+            CH1_WIDTH.borrow(cs).set(captured.wrapping_sub(start));
+            tc1.tccr1b.modify(|_, w| w.ices1().set_bit());
+        }
+    });
+}
+
+// ISR INT0 → CH2
+#[avr_device::interrupt(atmega328p)]
+fn INT0() {
+    interrupt::free(|cs| {
+        let tc1 = unsafe { &*arduino_hal::pac::TC1::ptr() };
+        let portd = unsafe { &*arduino_hal::pac::PORTD::ptr() };
+
+        let t = tc1.tcnt1.read().bits();
+
+        // Leer el bit 2 del registro PIND
+        let pin_high = portd.pind.read().bits() & (1 << 2) != 0;
+
+        if pin_high {
+            CH2_START.borrow(cs).set(t);
+        } else {
+            let start = CH2_START.borrow(cs).get();
+            CH2_WIDTH.borrow(cs).set(t.wrapping_sub(start));
+        }
+    });
+}
+
+#[arduino_hal::entry]
+fn main() -> ! {
+    let dp = arduino_hal::Peripherals::take().unwrap();
+    let pins = arduino_hal::pins!(dp);
+    let mut serial = arduino_hal::default_serial!(dp, pins, 57600);
+    let rc = RcChannels::new(dp.EXINT, dp.TC1);
+
+   // let channel_2 = pins.d2.into_floating_input();
+  //unsafe { avr_device::interrupt::enable() };
+    // Digital pin 13 is also connected to an onboard LED marked "L"
+    let mut led = pins.d13.into_output();
+    led.set_high();
+   loop {
+        let ch1_us = rc.ch1();
+        let ch2_us = rc.ch2();
+        ufmt::uwriteln!(&mut serial, "ch1 {}!\r\n", ch1_us).unwrap_infallible();
+
+        ufmt::uwriteln!(&mut serial, "ch2 {}!\r\n", ch2_us).unwrap_infallible();
+        // Aquí puedes mapearlo a PWM, ángulos, etc.
+    }
+  //  loop {
+  //      timer1.reset();
+  //      while channel_2.is_low() {}
+  //      let start = timer1.micros();
+
+  //      while channel_2.is_high() {}
+  //      let pulse_with = timer1.micros() - start;
+
+  //     // led.toggle();
+  //     // arduino_hal::delay_ms(100);
+  //     // led.toggle();
+  //     // arduino_hal::delay_ms(100);
+  //     // led.toggle();
+  //     // arduino_hal::delay_ms(100);
+  //     // led.toggle();
+  //     // arduino_hal::delay_ms(800);
+  //  }
+}
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
+    loop {}
+}

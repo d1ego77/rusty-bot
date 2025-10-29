@@ -1,0 +1,8 @@
+[build]
+target = "avr-atmega328p.json"
+rustflags = ["-C", "target-cpu=atmega328p", "-C", "panic=abort"]
+[unstable]
+build-std = ["core","alloc"]
+
+[target.'cfg(target_arch = "avr")']
+runner = "ravedude"

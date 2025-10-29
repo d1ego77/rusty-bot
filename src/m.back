@@ -1,0 +1,48 @@
+#![no_std]
+#![no_main]
+#![feature(asm_experimental_arch)]
+
+use arduino_hal::prelude::*;
+use core::arch::asm;
+use core::panic::PanicInfo;
+use avr_device::asm;
+#[unsafe(no_mangle)]
+pub extern "C" fn main() -> ! {
+static HELLO: &[u8] = b"Hola Mundo!\0";
+    loop {
+        led_on();
+        delay(100);
+        led_off();
+        delay(5000);
+    }
+}
+
+fn led_on() {
+    unsafe {
+        // Configura PB5 como salida
+        asm!("sbi 0x05, 5");
+        asm!("sbi 0x04, 5");
+    }
+}
+fn led_off() {
+    unsafe {
+        // Configura PB5 como salida
+        asm!("sbi 0x04, 5");
+        asm!("cbi 0x05, 5");
+    }
+}
+
+#[panic_handler]
+fn panic(_: &PanicInfo) -> ! {
+    loop {}
+}
+
+#[inline(never)]
+fn delay(cycles: u32) {
+    arduino_hal::delay_ms(cycles);
+    //let mut current = cycles * 16_000;
+    //while current > 0 {
+    //    unsafe { asm!("nop") }
+    //    current -= 1;
+    //}
+}
