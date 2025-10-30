@@ -15,8 +15,9 @@ brew install avr-binutils avr-gcc avrdude
 cargo +stable install ravedude
 ```
 
-Parts:
+**Parts:**
 
+- Flysky-i6x
 - Arduino Uno R3
 - Motor Driver Adafruit TB661 (x2)
 - 7.2V 2400mAh NiMH Battery 
