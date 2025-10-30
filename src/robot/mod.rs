@@ -132,8 +132,8 @@ impl Motor for MotorC {
     fn forward(&mut self, value: u8) {
         self.d11.enable();
         self.d11.set_duty(value);
-        self.d9.set_low();
-        self.d10.set_high();
+        self.d10.set_low();
+        self.d9.set_high();
     }
     fn backward(&mut self, value: u8) {
         self.d11.enable();
