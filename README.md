@@ -1,11 +1,12 @@
 # rusty-bot
 Rust software for the Flysky-i6x radio control and Arduino Uno R3, Robot of Mecanum wheels
 
-Software;
-rustup toolchain install nightly
+
 
 **On Mac OS**
 ```
+rustup toolchain install nightly
+
 xcode-select --install # for the fist time
 
 brew tap osx-cross/avr
