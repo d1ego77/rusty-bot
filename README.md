@@ -5,7 +5,7 @@ Software;
 rustup toolchain install nightly
 
 **On Mac OS**
-
+```
 xcode-select --install # for the fist time
 
 brew tap osx-cross/avr
@@ -13,6 +13,7 @@ brew tap osx-cross/avr
 brew install avr-binutils avr-gcc avrdude
 
 cargo +stable install ravedude
+```
 
 Parts:
 
