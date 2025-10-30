@@ -5,6 +5,7 @@ Software;
 rustup toolchain install nightly
 
 On Mac OS
+
 xcode-select --install # for the fist time
 
 brew tap osx-cross/avr
