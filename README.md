@@ -4,7 +4,7 @@ Rust software for the Flysky-i6x radio control and Arduino Robot of Mecanum whee
 Software;
 rustup toolchain install nightly
 
-On Mac OS
+**On Mac OS**
 
 xcode-select --install # for the fist time
 
