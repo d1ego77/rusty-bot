@@ -264,14 +264,14 @@ impl Robot {
         self.pwm_values.pwm_y = y as u8;
         self.pwm_values.pwm_x = x as u8;
 
-        let r = 0; // luego podrías usar otro stick para rotar
+        let r = 0; // Todo: Implement left stick
 
         let mut a = y + x + r;
         let mut b = y - x - r;
         let mut c = y - x + r;
         let mut d = y + x - r;
 
-        // normalizar para que los valores estén dentro de 0–255
+        // Normalize values from 0–255
         let max = a.abs().max(b.abs().max(c.abs().max(d.abs()))) as f32;
         if max > 255.0 {
             let scale = 255.0 / max;
@@ -282,7 +282,7 @@ impl Robot {
         }
 
         ufmt::uwrite!(self.serial, "a: {}, b: {}, c: {}, d: {}", a, b, c, d).unwrap_infallible();
-        // aplicar dirección y magnitud a cada motor
+        // Apply direction and magnitud of each motor
         apply_motor(&mut self.motor_a, a);
         apply_motor(&mut self.motor_b, b);
         apply_motor(&mut self.motor_c, c);
@@ -293,7 +293,6 @@ impl Robot {
     pub fn start(&mut self) -> ! {
         loop {
             self.process_flysky_sticks();
-            //self.motor_c.forward(252);
             arduino_hal::delay_us(self.tick_duration_us);
         }
     }
