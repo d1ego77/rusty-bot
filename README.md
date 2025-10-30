@@ -1,5 +1,5 @@
 # rusty-bot
-Rust software for the Flysky-i6x radio control and Arduino Robot of Mecanum wheels
+Rust software for the Flysky-i6x radio control and Arduino Uno R3, Robot of Mecanum wheels
 
 Software;
 rustup toolchain install nightly
